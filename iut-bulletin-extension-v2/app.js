@@ -1,0 +1,836 @@
+/**
+ * IUT Bulletin+ — Main App (runs in PAGE context)
+ * Intercepts fetch to capture bulletin data, then replaces the UI.
+ */
+(function () {
+  "use strict";
+
+  /* ─── State ─── */
+  const STATE = {
+    semestres: [],
+    relevés: {},
+    absences: {},
+    currentSemestre: null,
+    studentName: "",
+    studentInfo: null,
+    injected: false,
+    config: null,
+  };
+
+  /* ─── Intercept fetch ─── */
+  const _fetch = window.fetch;
+  window.fetch = function (...args) {
+    return _fetch.apply(this, args).then((response) => {
+      const url = typeof args[0] === "string" ? args[0] : args[0]?.url || "";
+      if (url.includes("/services/data.php")) {
+        const clone = response.clone();
+        clone.json().then((d) => onData(url, d)).catch(() => {});
+      }
+      return response;
+    });
+  };
+
+  /* ─── Handle incoming data ─── */
+  function onData(url, data) {
+    if (data.redirect || data.erreur) return;
+
+    if (data.config) STATE.config = data.config;
+
+    // First connection → has auth + semestres
+    if (data.auth && data.semestres) {
+      STATE.semestres = data.semestres;
+      STATE.studentName = data.config?.name || data.auth?.session || "";
+
+      if (data.relevé) {
+        const sid = data.semestres[data.semestres.length - 1]?.formsemestre_id;
+        if (sid) {
+          STATE.relevés[sid] = data.relevé;
+          STATE.currentSemestre = String(sid);
+          STATE.studentInfo = data.relevé.etudiant || null;
+        }
+      }
+      if (data.absences) STATE.absences = data.absences;
+
+      waitForDom(() => setTimeout(boot, 200));
+    }
+
+    // Semester relevé
+    if (data.relevé && url.includes("relev")) {
+      const m = url.match(/semestre=(\d+)/);
+      if (m) {
+        STATE.relevés[m[1]] = data.relevé;
+        STATE.currentSemestre = m[1];
+        STATE.studentInfo = data.relevé.etudiant || STATE.studentInfo;
+      }
+      if (data.absences) STATE.absences = data.absences;
+      if (STATE.injected) render();
+    }
+  }
+
+  function waitForDom(fn) {
+    if (document.readyState === "loading")
+      document.addEventListener("DOMContentLoaded", fn);
+    else fn();
+  }
+
+  /* ─── Boot: replace entire page ─── */
+  function boot() {
+    if (STATE.injected) return;
+    STATE.injected = true;
+
+    // Nuke original page
+    document.body.innerHTML = "";
+    document.body.className = "";
+    document.body.setAttribute("style", "");
+
+    // Inject font
+    injectFont();
+
+    // Inject CSS
+    const style = document.createElement("style");
+    style.textContent = CSS;
+    document.head.appendChild(style);
+
+    // Build app shell
+    const app = document.createElement("div");
+    app.id = "bp";
+    const isDark =
+      localStorage.getItem("bp-theme") === "dark" ||
+      document.documentElement.classList.contains("dark");
+    if (isDark) app.classList.add("dark");
+
+    app.innerHTML = `
+      <header id="bp-hd">
+        <div class="bp-hd-l">
+          <div class="bp-logo">B+</div>
+          <span class="bp-title">Bulletin<span class="accent">+</span></span>
+        </div>
+        <div class="bp-hd-r">
+          <span class="bp-name">${esc(capitalize(STATE.studentName))}</span>
+          <button id="bp-theme" title="Thème">◑</button>
+          <a href="/logout.php" class="bp-btn-icon" title="Déconnexion">⏻</a>
+        </div>
+      </header>
+      <nav id="bp-nav"></nav>
+      <main id="bp-main">
+        <div id="bp-view-dashboard">
+          <section id="bp-stats"></section>
+          <section id="bp-ues"></section>
+          <section id="bp-mods"></section>
+          <section id="bp-abs"></section>
+        </div>
+        <div id="bp-view-sim" class="hidden">
+          <div class="bp-sim-header">
+            <h2>🧮 Simulateur de notes</h2>
+            <p>Définis un objectif par UE, puis ajuste tes notes. Les notes nécessaires dans les évaluations sans note se recalculent automatiquement.</p>
+          </div>
+          <div id="bp-sim-objectives"></div>
+          <div id="bp-sim-modules"></div>
+          <div id="bp-sim-results"></div>
+        </div>
+      </main>
+      <button id="bp-fab" title="Simulateur">🧮</button>
+    `;
+    document.body.appendChild(app);
+
+    // Events
+    document.getElementById("bp-theme").onclick = () => {
+      app.classList.toggle("dark");
+      localStorage.setItem("bp-theme", app.classList.contains("dark") ? "dark" : "light");
+    };
+    document.getElementById("bp-fab").onclick = toggleSimulator;
+
+    renderNav();
+    render();
+  }
+
+  let simVisible = false;
+  function toggleSimulator() {
+    simVisible = !simVisible;
+    document.getElementById("bp-view-dashboard").classList.toggle("hidden", simVisible);
+    document.getElementById("bp-view-sim").classList.toggle("hidden", !simVisible);
+    document.getElementById("bp-fab").textContent = simVisible ? "📊" : "🧮";
+    document.getElementById("bp-fab").title = simVisible ? "Bulletin" : "Simulateur";
+    if (simVisible) buildSim();
+  }
+
+  /* ═══════════════════════════════
+     RENDER FUNCTIONS
+     ═══════════════════════════════ */
+
+  function renderNav() {
+    const nav = document.getElementById("bp-nav");
+    if (!nav) return;
+    nav.innerHTML = STATE.semestres
+      .slice()
+      .reverse()
+      .map((s) => {
+        const active = String(s.formsemestre_id) === String(STATE.currentSemestre);
+        return `<button class="bp-tab${active ? " on" : ""}" data-id="${s.formsemestre_id}">
+          <strong>S${s.semestre_id}</strong><small>${s.annee_scolaire}</small>
+        </button>`;
+      })
+      .join("");
+
+    nav.querySelectorAll(".bp-tab").forEach((btn) =>
+      btn.addEventListener("click", () => switchSemester(btn.dataset.id))
+    );
+  }
+
+  function switchSemester(id) {
+    STATE.currentSemestre = String(id);
+    document.querySelectorAll(".bp-tab").forEach((b) =>
+      b.classList.toggle("on", b.dataset.id === String(id))
+    );
+    if (STATE.relevés[id]) {
+      render();
+    } else {
+      _fetch("/services/data.php?q=relevéEtudiant&semestre=" + id, {
+        method: "post",
+        headers: { "Content-type": "application/x-www-form-urlencoded; charset=UTF-8" },
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.relevé) {
+            STATE.relevés[id] = d.relevé;
+            if (d.absences) STATE.absences = d.absences;
+            render();
+          }
+        });
+    }
+  }
+
+  function render() {
+    const rel = STATE.relevés[STATE.currentSemestre];
+    if (!rel) return;
+    renderStats(rel);
+    renderUEs(rel);
+    renderModules(rel);
+    renderAbsences();
+    if (simVisible) buildSim();
+  }
+
+  /* ── Stats ── */
+  function renderStats(rel) {
+    const el = document.getElementById("bp-stats");
+    const ues = rel.ues || {};
+    const ueList = Object.entries(ues).filter(([k]) => k !== "Bonus");
+
+    const avg =
+      ueList.length > 0
+        ? (ueList.reduce((s, [, u]) => s + (pf(u.moyenne?.value) || 0), 0) / ueList.length).toFixed(2)
+        : "—";
+
+    const mods = { ...rel.ressources, ...rel.saes };
+    const nbMods = Object.keys(mods).length;
+
+    // Count injustified absences
+    let nbAbs = 0;
+    if (STATE.absences && typeof STATE.absences === "object") {
+      Object.values(STATE.absences).forEach((list) => {
+        if (!Array.isArray(list)) return;
+        list.forEach((a) => {
+          if (a.statut !== "present" && a.justifie !== true && a.justifie !== "true") nbAbs++;
+        });
+      });
+    }
+
+    // Ranking info from semestre
+    const rankInfo = rel.semestre?.rang
+      ? `${rel.semestre.rang.value} / ${rel.semestre.rang.total}`
+      : "";
+    const moyPromo = rel.semestre?.notes?.moy || "";
+
+    el.innerHTML = `
+      <div class="bp-card bp-card-main">
+        <div class="bp-card-v">${avg}</div>
+        <div class="bp-card-l">Moyenne générale</div>
+        ${rankInfo ? `<div class="bp-card-sub">Rang ${rankInfo}</div>` : ""}
+      </div>
+      <div class="bp-card">
+        <div class="bp-card-v">${ueList.length}</div>
+        <div class="bp-card-l">UE</div>
+      </div>
+      <div class="bp-card">
+        <div class="bp-card-v">${nbMods}</div>
+        <div class="bp-card-l">Modules</div>
+      </div>
+      <div class="bp-card${nbAbs > 3 ? " bp-card-danger" : ""}">
+        <div class="bp-card-v">${nbAbs}</div>
+        <div class="bp-card-l">Abs. injustifiées</div>
+      </div>
+    `;
+  }
+
+  /* ── UE cards ── */
+  function renderUEs(rel) {
+    const el = document.getElementById("bp-ues");
+    const ues = rel.ues || {};
+
+    el.innerHTML =
+      `<h2>📚 Unités d'Enseignement</h2><div class="bp-ue-grid">` +
+      Object.entries(ues)
+        .filter(([k]) => k !== "Bonus")
+        .map(([code, ue]) => {
+          const m = pf(ue.moyenne?.value) || 0;
+          const col = noteColor(m);
+          const pct = Math.min((m / 20) * 100, 100);
+          const rank = ue.moyenne?.rang ? `${ue.moyenne.rang} / ${ue.moyenne.total}` : "";
+          const moyPromo = ue.moyenne?.moy || "";
+          return `<div class="bp-ue">
+            <div class="bp-ue-top">
+              <span class="bp-ue-code">${esc(code)}</span>
+              <span class="bp-ue-avg" style="color:${col}">${ue.moyenne?.value ?? "—"}</span>
+            </div>
+            <div class="bp-ue-title">${esc(ue.titre || "")}</div>
+            <div class="bar-bg"><div class="bar" style="width:${pct}%;background:${col}"></div></div>
+            ${rank ? `<div class="bp-ue-meta">${esc(rank)} · moy. ${esc(moyPromo)}</div>` : ""}
+          </div>`;
+        })
+        .join("") +
+      `</div>`;
+  }
+
+  /* ── Modules (Ressources + SAÉ) ── */
+  function renderModules(rel) {
+    const el = document.getElementById("bp-mods");
+    const ues = rel.ues || {};
+    let html = "";
+
+    const sections = [
+      ["📖 Ressources", rel.ressources],
+      ["🎯 SAÉ", rel.saes],
+    ];
+
+    sections.forEach(([title, mods]) => {
+      if (!mods || !Object.keys(mods).length) return;
+      html += `<h2>${title}</h2><div class="bp-mod-list">`;
+      html += Object.entries(mods)
+        .map(([code, mod]) => {
+          const avg = mod.moyenne?.value ?? mod.moyenne ?? "—";
+          const avgN = pf(avg);
+          const col = noteColor(avgN);
+          const evals = mod.evaluations || [];
+
+          // Get UE coefs for this module
+          const ueCoefs = [];
+          Object.entries(ues).filter(([k]) => k !== "Bonus").forEach(([ueCode, ue]) => {
+            const inRes = ue.ressources?.[code];
+            const inSae = ue.saes?.[code];
+            const coef = inRes?.coef ?? inSae?.coef;
+            if (coef !== undefined && coef > 0) {
+              ueCoefs.push({ ue: ueCode, coef });
+            }
+          });
+          const ueCoefsHtml = ueCoefs.length
+            ? `<div class="bp-mod-ues">${ueCoefs.map(c => `<span class="bp-mod-ue-tag">${esc(c.ue)}: ${c.coef}</span>`).join("")}</div>`
+            : "";
+
+          let evHtml = "";
+          if (evals.length) {
+            evHtml =
+              `<div class="bp-evals">` +
+              evals
+                .map((ev) => {
+                  const n = ev.note?.value ?? "—";
+                  const nN = pf(n);
+                  const max = ev.note?.max || 20;
+                  return `<div class="bp-ev">
+                  <span class="bp-ev-name">${esc(ev.description || "Évaluation")}</span>
+                  <span class="bp-ev-coef">${ev.coef ? "coef " + ev.coef : ""}</span>
+                  <span class="bp-ev-note" style="color:${noteColor(nN)}">${esc(String(n))}<small>/${max}</small></span>
+                </div>`;
+                })
+                .join("") +
+              `</div>`;
+          }
+
+          return `<div class="bp-mod">
+            <div class="bp-mod-hd" onclick="this.parentElement.classList.toggle('open')">
+              <div class="bp-mod-info">
+                <span class="bp-mod-code">${esc(code)}</span>
+                <span class="bp-mod-title">${esc(mod.titre || "")}</span>
+              </div>
+              <span class="bp-mod-avg" style="color:${col}">${esc(String(avg))}</span>
+              <span class="chev">▾</span>
+            </div>
+            ${ueCoefsHtml}
+            ${evHtml}
+          </div>`;
+        })
+        .join("");
+      html += `</div>`;
+    });
+
+    el.innerHTML = html;
+  }
+
+  /* ── Absences ── */
+  function renderAbsences() {
+    const el = document.getElementById("bp-abs");
+    const entries = [];
+
+    if (STATE.absences && typeof STATE.absences === "object") {
+      Object.entries(STATE.absences).forEach(([date, list]) => {
+        if (!Array.isArray(list)) return;
+        list.forEach((a) => {
+          if (a.statut === "present") return;
+          entries.push({ date, ...a });
+        });
+      });
+    }
+
+    if (!entries.length) {
+      el.innerHTML = `<h2>✅ Absences</h2><p class="bp-muted">Aucune absence — bien joué !</p>`;
+      return;
+    }
+
+    entries.sort((a, b) => b.date.localeCompare(a.date));
+
+    el.innerHTML =
+      `<h2>📋 Absences (${entries.length})</h2><div class="bp-abs-list">` +
+      entries
+        .map((a) => {
+          const just = a.justifie === true || a.justifie === "true";
+          const cls = just ? "just" : a.statut === "retard" ? "ret" : "inj";
+          const label = just ? "Justifiée" : a.statut === "retard" ? "Retard" : "Injustifiée";
+          const d = a.date.split("-").reverse().join("/");
+          const matiere = typeof a.matiereComplet === "string" ? a.matiereComplet : "—";
+          return `<div class="bp-ab bp-ab-${cls}">
+            <span class="bp-ab-d">${d}</span>
+            <span class="bp-ab-m">${esc(matiere)}</span>
+            <span class="bp-ab-s">${label}</span>
+          </div>`;
+        })
+        .join("") +
+      `</div>`;
+  }
+
+  /* ── Simulator with objectives ── */
+  const objectives = {};
+
+  function buildSim() {
+    const rel = STATE.relevés[STATE.currentSemestre];
+    if (!rel) return;
+
+    const objEl = document.getElementById("bp-sim-objectives");
+    const modsEl = document.getElementById("bp-sim-modules");
+    const resEl = document.getElementById("bp-sim-results");
+    const ues = rel.ues || {};
+    const allMods = { ...rel.ressources, ...rel.saes };
+
+    // ── Objective cards per UE ──
+    let objHtml = `<h3>🎯 Objectifs par UE</h3><div class="bp-obj-grid">`;
+    Object.entries(ues)
+      .filter(([k]) => k !== "Bonus")
+      .forEach(([code, ue]) => {
+        if (objectives[code] === undefined) objectives[code] = 10;
+        objHtml += `<div class="bp-obj-card">
+          <div class="bp-obj-top">
+            <span class="bp-obj-code">${esc(code)}</span>
+            <span class="bp-obj-current">${ue.moyenne?.value ?? "—"}</span>
+          </div>
+          <div class="bp-obj-title">${esc(ue.titre || "")}</div>
+          <div class="bp-obj-row">
+            <label>Objectif</label>
+            <input type="number" class="obj-inp" data-ue="${esc(code)}"
+              value="${objectives[code]}" min="0" max="20" step="0.5">
+          </div>
+        </div>`;
+      });
+    objHtml += `</div>`;
+    objEl.innerHTML = objHtml;
+
+    // ── Module note inputs ──
+    let html = "";
+    Object.entries(allMods).forEach(([code, mod]) => {
+      const evals = mod.evaluations || [];
+      if (!evals.length) return;
+      html += `<div class="bp-sim-mod"><div class="bp-sim-mod-t">${esc(code)} — ${esc(mod.titre || "")}</div>`;
+      evals.forEach((ev, i) => {
+        const n = ev.note?.value ?? "";
+        const max = ev.note?.max || 20;
+        const isBlank = n === "~" || n === "" || n === "EXC" || n === "ABS" || n === "ATT" || n === "ABJ";
+        const val = isBlank ? "" : n;
+        html += `<div class="bp-sim-ev">
+          <label>${esc(ev.description || "Eval " + (i + 1))}${ev.coef ? ` <small class="bp-sim-coef">coef ${ev.coef}</small>` : ""}</label>
+          <div class="bp-sim-inp">
+            <input type="number" class="sim-n${isBlank ? " sim-blank" : ""}" data-c="${esc(code)}" data-i="${i}" data-blank="${isBlank}"
+              value="${esc(String(val))}" min="0" max="${max}" step="0.25" placeholder="${isBlank ? "auto" : "—"}">
+            <span>/${max}</span>
+          </div>
+        </div>`;
+      });
+      html += `</div>`;
+    });
+    modsEl.innerHTML = html;
+
+    // ── Events ──
+    const recalc = () => recalcSim(rel, resEl);
+    modsEl.querySelectorAll(".sim-n").forEach((inp) => inp.addEventListener("input", recalc));
+    objEl.querySelectorAll(".obj-inp").forEach((inp) => {
+      inp.addEventListener("input", () => {
+        objectives[inp.dataset.ue] = pf(inp.value) || 10;
+        recalc();
+      });
+    });
+    recalc();
+  }
+
+  // Helper: get the UE coef for a module
+  function getModCoefInUE(ue, modCode) {
+    return pf(ue.ressources?.[modCode]?.coef) || pf(ue.saes?.[modCode]?.coef) || 0;
+  }
+
+  // Helper: compute module average from evals (using user overrides + blanks)
+  function calcModAvg(modCode, allMods, userN, blanks) {
+    const mod = allMods[modCode];
+    if (!mod) return null;
+    const evals = mod.evaluations || [];
+    let tw = 0, tc = 0;
+    evals.forEach((ev, idx) => {
+      const coef = pf(ev.coef) || 1;
+      const max = pf(ev.note?.max) || 20;
+      let note;
+      if (userN[modCode]?.[idx] !== undefined) {
+        note = userN[modCode][idx];
+      } else {
+        const orig = pf(ev.note?.value);
+        if (!isNaN(orig)) { note = orig; }
+        else {
+          const bl = blanks.find((b) => b.code === modCode && b.idx === idx);
+          if (bl && bl.input.placeholder !== "auto") note = pf(bl.input.placeholder);
+        }
+      }
+      if (note !== undefined && !isNaN(note)) { tw += (note / max) * 20 * coef; tc += coef; }
+    });
+    return tc > 0 ? tw / tc : null;
+  }
+
+  function recalcSim(rel, resEl) {
+    const ues = rel.ues || {};
+    const allMods = { ...rel.ressources, ...rel.saes };
+    const inputs = document.querySelectorAll(".sim-n");
+
+    // 1. Gather user notes & identify blank evals
+    const userN = {};
+    const blanks = [];
+    inputs.forEach((inp) => {
+      const c = inp.dataset.c, i = parseInt(inp.dataset.i);
+      const isBlank = inp.dataset.blank === "true";
+      const v = pf(inp.value);
+      if (!userN[c]) userN[c] = {};
+      if (!isNaN(v) && inp.value !== "") {
+        userN[c][i] = v;
+      } else if (isBlank) {
+        const mod = allMods[c];
+        const ev = mod?.evaluations?.[i];
+        if (ev) blanks.push({ code: c, idx: i, coef: pf(ev.coef) || 1, max: pf(ev.note?.max) || 20, input: inp });
+      }
+    });
+
+    // 2. For each UE, solve for needed blank notes
+    // Formula: UE avg = Σ(modAvg_i * ueCoef_i) / Σ(ueCoef_i)
+    // where ueCoef comes from ues.{UE}.ressources/saes.{code}.coef
+    const neededMap = {};
+
+    Object.entries(ues).filter(([k]) => k !== "Bonus").forEach(([ueCode, ue]) => {
+      const target = objectives[ueCode] ?? 10;
+      let totalCoef = 0, fixedSum = 0;
+      const flexMods = [];
+
+      // Iterate all modules that contribute to this UE (from ue.ressources + ue.saes)
+      const ueModules = { ...ue.ressources, ...ue.saes };
+      Object.entries(ueModules).forEach(([mc, info]) => {
+        const ueCoef = pf(info.coef) || 0;
+        if (ueCoef <= 0) return;
+        totalCoef += ueCoef;
+
+        const mod = allMods[mc];
+        if (!mod) return;
+        const evals = mod.evaluations || [];
+
+        let ftw = 0, ftc = 0, btc = 0;
+        const modBlanks = [];
+        evals.forEach((ev, idx) => {
+          const evCoef = pf(ev.coef) || 1;
+          const max = pf(ev.note?.max) || 20;
+          const isBl = blanks.some((b) => b.code === mc && b.idx === idx) && userN[mc]?.[idx] === undefined;
+          if (isBl) {
+            btc += evCoef;
+            modBlanks.push({ idx, coef: evCoef, max });
+          } else {
+            const note = userN[mc]?.[idx] ?? pf(ev.note?.value);
+            if (!isNaN(note)) { ftw += (note / max) * 20 * evCoef; ftc += evCoef; }
+          }
+        });
+
+        if (btc > 0) {
+          flexMods.push({ mc, ueCoef, ftw, ftc, btc, modBlanks });
+        } else if (ftc > 0) {
+          fixedSum += (ftw / ftc) * ueCoef;
+        }
+      });
+
+      // Solve: target = (fixedSum + Σ(flexModAvg_i * ueCoef_i)) / totalCoef
+      // Distribute needed evenly across flex modules
+      const neededFlexSum = target * totalCoef - fixedSum;
+      const flexCoefTotal = flexMods.reduce((s, f) => s + f.ueCoef, 0);
+
+      flexMods.forEach((fc) => {
+        const share = flexCoefTotal > 0 ? (neededFlexSum / flexCoefTotal) * fc.ueCoef : 0;
+        const neededModAvg = share / fc.ueCoef;
+        // neededModAvg = (ftw + X * btc) / (ftc + btc) → solve for X
+        const X = fc.btc > 0 ? (neededModAvg * (fc.ftc + fc.btc) - fc.ftw) / fc.btc : 0;
+        fc.modBlanks.forEach((b) => {
+          const key = fc.mc + "_" + b.idx;
+          if (!neededMap[key]) neededMap[key] = [];
+          neededMap[key].push(Math.max(0, Math.min(20, X)));
+        });
+      });
+    });
+
+    // 3. Auto-fill blank placeholders (take max needed across all UEs)
+    blanks.forEach((b) => {
+      if (userN[b.code]?.[b.idx] !== undefined) return;
+      const key = b.code + "_" + b.idx;
+      const vals = neededMap[key] || [];
+      if (vals.length > 0) {
+        const needed = Math.max(...vals);
+        const clamped = Math.max(0, Math.min(b.max, needed));
+        b.input.placeholder = clamped.toFixed(1);
+        b.input.classList.toggle("sim-impossible", needed > b.max);
+        b.input.classList.toggle("sim-easy", needed >= 0 && needed <= 10);
+      } else {
+        b.input.placeholder = "auto";
+        b.input.classList.remove("sim-impossible", "sim-easy");
+      }
+    });
+
+    // 4. Compute final simulated UE averages using correct coefs
+    let html = `<h3>Résultats simulés</h3><div class="bp-sim-ues">`;
+    Object.entries(ues).filter(([k]) => k !== "Bonus").forEach(([ueCode, ue]) => {
+      const target = objectives[ueCode] ?? 10;
+      let tw = 0, tp = 0;
+
+      const ueModules = { ...ue.ressources, ...ue.saes };
+      Object.entries(ueModules).forEach(([mc, info]) => {
+        const ueCoef = pf(info.coef) || 0;
+        if (ueCoef <= 0) return;
+        const avg = calcModAvg(mc, allMods, userN, blanks);
+        if (avg !== null) { tw += avg * ueCoef; tp += ueCoef; }
+      });
+
+      const sim = tp > 0 ? (tw / tp).toFixed(2) : "—";
+      const simN = pf(sim);
+      const onTarget = simN >= target;
+      const origN = pf(ue.moyenne?.value);
+      const diff = !isNaN(origN) ? (simN - origN).toFixed(2) : "—";
+      const diffStr = diff !== "—" ? (diff > 0 ? `+${diff}` : diff) : "";
+      const col = onTarget ? "var(--ok)" : simN >= target - 2 ? "var(--warn)" : "var(--err)";
+
+      html += `<div class="bp-sim-ue${onTarget ? " bp-sim-ue-ok" : ""}">
+        <span class="bp-sim-ue-icon">${onTarget ? "✅" : "⚠️"}</span>
+        <span class="bp-sim-ue-c">${esc(ueCode)}</span>
+        <span class="bp-sim-ue-t">${esc(ue.titre || "")}</span>
+        <span class="bp-sim-ue-o">${esc(ue.moyenne?.value ?? "—")}</span>
+        <span class="bp-sim-arrow">→</span>
+        <span class="bp-sim-ue-n" style="color:${col}">${sim}</span>
+        ${diffStr ? `<span class="bp-sim-ue-diff" style="color:${col}">(${diffStr})</span>` : ""}
+        <span class="bp-sim-ue-target">obj: ${target}</span>
+      </div>`;
+    });
+    html += `</div>`;
+    resEl.innerHTML = html;
+  }
+
+  /* ═══════════════════════════════
+     HELPERS
+     ═══════════════════════════════ */
+  function pf(v) { return parseFloat(v); }
+  function esc(s) {
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+  function capitalize(s) {
+    return s.replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  function noteColor(n) {
+    if (isNaN(n)) return "var(--t2)";
+    return n >= 10 ? "var(--ok)" : n >= 8 ? "var(--warn)" : "var(--err)";
+  }
+  function injectFont() {
+    const l = document.createElement("link");
+    l.rel = "stylesheet";
+    l.href = "https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,500;9..40,700&family=JetBrains+Mono:wght@400;600&display=swap";
+    document.head.appendChild(l);
+  }
+
+  /* ═══════════════════════════════
+     CSS
+     ═══════════════════════════════ */
+  const CSS = `
+/* === RESET & VARS === */
+#bp{--bg:#f4f5f7;--bg2:#fff;--bg3:#ebedf0;--t1:#1a1a2e;--t2:#6b7280;--pri:#0066ff;--pri2:#e8f0fe;--ok:#00b37e;--warn:#f59e0b;--err:#ef4444;--brd:#e2e4e8;--sh:0 1px 3px rgba(0,0,0,.06);--sh2:0 4px 12px rgba(0,0,0,.08);--r:12px;--r2:8px;font-family:'DM Sans',-apple-system,sans-serif;background:var(--bg);color:var(--t1);min-height:100vh}
+#bp.dark{--bg:#0f1117;--bg2:#1a1c25;--bg3:#252833;--t1:#e4e5e9;--t2:#9095a0;--pri:#4d8eff;--pri2:#1a2744;--brd:#2a2d38;--sh:0 1px 3px rgba(0,0,0,.2);--sh2:0 4px 12px rgba(0,0,0,.3)}
+#bp *,#bp *::before,#bp *::after{box-sizing:border-box;margin:0}
+body{margin:0!important;background:var(--bg)!important}
+body>*:not(#bp){display:none!important}
+
+/* === HEADER === */
+#bp-hd{position:sticky;top:0;z-index:100;display:flex;justify-content:space-between;align-items:center;padding:12px 20px;background:var(--bg2);border-bottom:1px solid var(--brd);backdrop-filter:blur(12px)}
+.bp-hd-l{display:flex;align-items:center;gap:10px}
+.bp-logo{background:var(--pri);color:#fff;font-weight:700;font-size:16px;width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center}
+.bp-title{font-size:18px;font-weight:700;letter-spacing:-.5px}
+.accent{color:var(--pri)}
+.bp-hd-r{display:flex;align-items:center;gap:12px}
+.bp-name{font-weight:500;color:var(--t2);font-size:14px}
+#bp-theme,.bp-btn-icon{background:var(--bg3);border:none;width:34px;height:34px;border-radius:50%;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;color:var(--t1);text-decoration:none;transition:background .2s}
+#bp-theme:hover,.bp-btn-icon:hover{background:var(--pri2)}
+
+/* === NAV === */
+#bp-nav{display:flex;gap:8px;padding:14px 20px;overflow-x:auto;background:var(--bg)}
+.bp-tab{display:flex;flex-direction:column;align-items:center;padding:8px 18px;border:1px solid var(--brd);border-radius:var(--r);background:var(--bg2);cursor:pointer;white-space:nowrap;color:var(--t1);font-family:inherit;transition:all .2s}
+.bp-tab:hover{border-color:var(--pri)}
+.bp-tab.on{background:var(--pri);color:#fff;border-color:var(--pri)}
+.bp-tab strong{font-size:15px}
+.bp-tab small{font-size:11px;opacity:.7}
+
+/* === MAIN === */
+#bp-main{max-width:920px;margin:0 auto;padding:0 20px 80px}
+.hidden{display:none!important}
+
+/* === STAT CARDS === */
+#bp-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:18px 0}
+.bp-card{background:var(--bg2);padding:18px;border-radius:var(--r);border:1px solid var(--brd);text-align:center;transition:transform .2s,box-shadow .2s;animation:fadeUp .4s ease both}
+.bp-card:hover{transform:translateY(-2px);box-shadow:var(--sh2)}
+.bp-card-main{background:linear-gradient(135deg,var(--pri),#0044cc);color:#fff;border:none}
+.bp-card-main .bp-card-l,.bp-card-main .bp-card-sub{color:rgba(255,255,255,.8)}
+.bp-card-danger .bp-card-v{color:var(--err)}
+.bp-card-v{font-size:26px;font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:-1px}
+.bp-card-l{font-size:12px;color:var(--t2);margin-top:2px}
+.bp-card-sub{font-size:11px;margin-top:4px;opacity:.8}
+.bp-card:nth-child(1){animation-delay:0s}.bp-card:nth-child(2){animation-delay:.05s}.bp-card:nth-child(3){animation-delay:.1s}.bp-card:nth-child(4){animation-delay:.15s}
+
+/* === UE === */
+#bp-ues h2,#bp-mods h2,#bp-abs h2{font-size:17px;margin:24px 0 10px}
+.bp-ue-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+.bp-ue{background:var(--bg2);border:1px solid var(--brd);border-radius:var(--r);padding:14px;transition:transform .2s,box-shadow .2s;animation:fadeUp .4s ease both}
+.bp-ue:hover{transform:translateY(-2px);box-shadow:var(--sh2)}
+.bp-ue-top{display:flex;justify-content:space-between;align-items:baseline}
+.bp-ue-code{font-weight:700;font-size:14px}
+.bp-ue-avg{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:20px}
+.bp-ue-title{font-size:12px;color:var(--t2);margin:3px 0 10px}
+.bar-bg{height:5px;background:var(--bg3);border-radius:3px;overflow:hidden}
+.bar{height:100%;border-radius:3px;transition:width .6s ease}
+.bp-ue-meta{font-size:11px;color:var(--t2);margin-top:6px}
+
+/* === MODULES === */
+.bp-mod-list{display:flex;flex-direction:column;gap:5px}
+.bp-mod{background:var(--bg2);border:1px solid var(--brd);border-radius:var(--r2);overflow:hidden;animation:fadeUp .35s ease both}
+.bp-mod-hd{display:flex;align-items:center;padding:10px 14px;cursor:pointer;gap:10px;transition:background .15s}
+.bp-mod-hd:hover{background:var(--bg3)}
+.bp-mod-info{flex:1;min-width:0;display:flex;align-items:center;gap:8px;overflow:hidden}
+.bp-mod-code{font-weight:600;font-size:13px;font-family:'JetBrains Mono',monospace;white-space:nowrap}
+.bp-mod-title{font-size:13px;color:var(--t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bp-mod-avg{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:15px;white-space:nowrap}
+.chev{color:var(--t2);transition:transform .2s;font-size:13px}
+.bp-mod.open .chev{transform:rotate(180deg)}
+.bp-mod-ues{display:flex;flex-wrap:wrap;gap:4px;padding:0 14px 8px 14px;border-bottom:1px solid var(--brd)}
+.bp-mod-ue-tag{font-size:10px;padding:2px 8px;border-radius:10px;background:var(--pri2);color:var(--pri);font-family:'JetBrains Mono',monospace;font-weight:600;white-space:nowrap}
+.bp-evals{max-height:0;overflow:hidden;transition:max-height .3s ease}
+.bp-mod.open .bp-evals{max-height:800px}
+.bp-ev{display:flex;align-items:center;padding:8px 14px 8px 28px;border-top:1px solid var(--brd);gap:10px;font-size:13px}
+.bp-ev-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bp-ev-coef{font-size:11px;color:var(--t2);white-space:nowrap}
+.bp-ev-note{font-family:'JetBrains Mono',monospace;font-weight:600;white-space:nowrap}
+.bp-ev-note small{font-weight:400;opacity:.5;font-size:11px}
+
+/* === ABSENCES === */
+.bp-muted{color:var(--t2);font-style:italic;padding:12px 0}
+.bp-abs-list{display:flex;flex-direction:column;gap:4px}
+.bp-ab{display:flex;align-items:center;gap:10px;padding:8px 14px;border-radius:var(--r2);background:var(--bg2);border:1px solid var(--brd);font-size:13px;animation:fadeUp .35s ease both}
+.bp-ab-d{font-family:'JetBrains Mono',monospace;font-size:12px;white-space:nowrap;min-width:80px}
+.bp-ab-m{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bp-ab-s{font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px;white-space:nowrap}
+.bp-ab-inj .bp-ab-s{background:#fde8e8;color:var(--err)}
+.bp-ab-ret .bp-ab-s{background:#fef3cd;color:#b45309}
+.bp-ab-just .bp-ab-s{background:#d4edda;color:var(--ok)}
+#bp.dark .bp-ab-inj .bp-ab-s{background:#3b1111}
+#bp.dark .bp-ab-ret .bp-ab-s{background:#3b2a05}
+#bp.dark .bp-ab-just .bp-ab-s{background:#0a3b1e}
+
+/* === SIMULATOR === */
+.bp-sim-header h2{font-size:20px}.bp-sim-header p{color:var(--t2);font-size:13px;margin:4px 0 16px}
+
+/* Objectives */
+.bp-obj-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-bottom:20px}
+.bp-obj-card{background:var(--bg2);border:1px solid var(--brd);border-radius:var(--r);padding:12px}
+.bp-obj-top{display:flex;justify-content:space-between;align-items:baseline}
+.bp-obj-code{font-weight:700;font-size:13px}
+.bp-obj-current{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:18px}
+.bp-obj-title{font-size:11px;color:var(--t2);margin:2px 0 8px}
+.bp-obj-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.bp-obj-row label{font-size:12px;color:var(--t2)}
+.obj-inp{width:60px;padding:5px 6px;border:2px solid var(--pri);border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;text-align:center;background:var(--bg);color:var(--pri);transition:border-color .2s}
+.obj-inp:focus{outline:none;box-shadow:0 0 0 3px var(--pri2)}
+#bp-sim-objectives h3{font-size:16px;margin-bottom:10px}
+
+/* Module inputs */
+.bp-sim-mod{background:var(--bg2);border:1px solid var(--brd);border-radius:var(--r);padding:14px;margin-bottom:10px}
+.bp-sim-mod-t{font-weight:700;font-size:13px;font-family:'JetBrains Mono',monospace;margin-bottom:10px}
+.bp-sim-ev{display:flex;align-items:center;justify-content:space-between;padding:5px 0;gap:10px}
+.bp-sim-ev label{flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bp-sim-coef{color:var(--t2);font-weight:400}
+.bp-sim-inp{display:flex;align-items:center;gap:4px}
+.bp-sim-inp input{width:60px;padding:5px 6px;border:1px solid var(--brd);border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:13px;text-align:center;background:var(--bg);color:var(--t1);transition:border-color .2s}
+.bp-sim-inp input:focus{outline:none;border-color:var(--pri);box-shadow:0 0 0 3px var(--pri2)}
+.bp-sim-inp span{font-size:11px;color:var(--t2)}
+
+/* Blank eval auto-fill styling */
+.sim-blank{border-style:dashed!important;color:var(--t2)!important}
+.sim-blank::placeholder{color:var(--pri);font-weight:600;opacity:1}
+.sim-impossible{border-color:var(--err)!important;background:rgba(239,68,68,.08)!important}
+.sim-impossible::placeholder{color:var(--err)!important}
+.sim-easy::placeholder{color:var(--ok)!important}
+
+/* Results */
+#bp-sim-results{position:sticky;bottom:0;background:var(--bg2);border:1px solid var(--brd);border-radius:var(--r);padding:14px;margin-top:16px;box-shadow:var(--sh2)}
+#bp-sim-results h3{font-size:14px;margin-bottom:10px}
+.bp-sim-ues{display:flex;flex-direction:column;gap:6px}
+.bp-sim-ue{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bg);border-radius:var(--r2);border:1px solid transparent;transition:border-color .2s}
+.bp-sim-ue-ok{border-color:var(--ok);background:rgba(0,179,126,.05)}
+.bp-sim-ue-icon{font-size:14px;min-width:20px;text-align:center}
+.bp-sim-ue-c{font-weight:700;font-family:'JetBrains Mono',monospace;font-size:12px;min-width:50px}
+.bp-sim-ue-t{flex:1;font-size:12px;color:var(--t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bp-sim-ue-o{font-family:'JetBrains Mono',monospace;color:var(--t2);font-size:13px}
+.bp-sim-arrow{color:var(--t2);font-size:12px}
+.bp-sim-ue-n{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:15px}
+.bp-sim-ue-diff{font-family:'JetBrains Mono',monospace;font-size:11px;opacity:.8}
+.bp-sim-ue-target{font-size:10px;color:var(--t2);white-space:nowrap}
+
+/* === FAB === */
+#bp-fab{position:fixed;bottom:20px;right:20px;width:52px;height:52px;border-radius:50%;border:none;background:var(--pri);color:#fff;font-size:22px;cursor:pointer;box-shadow:var(--sh2);display:flex;align-items:center;justify-content:center;transition:transform .2s;z-index:50}
+#bp-fab:hover{transform:scale(1.08)}
+
+/* === RESPONSIVE === */
+@media(max-width:600px){
+  #bp-hd{padding:10px 14px}
+  .bp-title{font-size:15px}
+  .bp-name{display:none}
+  #bp-main{padding:0 10px 80px}
+  #bp-stats{grid-template-columns:repeat(2,1fr);gap:8px}
+  .bp-card-v{font-size:22px}
+  .bp-ue-grid{grid-template-columns:1fr}
+  .bp-ev{flex-wrap:wrap}.bp-ev-coef{order:3;width:100%}
+  .bp-obj-grid{grid-template-columns:repeat(2,1fr)}
+  .bp-sim-ev{flex-wrap:wrap}.bp-sim-ev label{width:100%}
+  .bp-sim-ue-t{display:none}
+  .bp-sim-ue-diff{display:none}
+}
+
+/* === ANIM === */
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+`;
+})();

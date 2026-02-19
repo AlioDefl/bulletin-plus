@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IUT Bulletin+ — Installation iOS</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap');
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font-family: 'DM Sans', -apple-system, sans-serif;
+    background: #0f1117;
+    color: #e4e5e9;
+    padding: 20px;
+    line-height: 1.6;
+  }
+  .container { max-width: 600px; margin: 0 auto; }
+  h1 { font-size: 28px; margin-bottom: 4px; }
+  h1 span { color: #4d8eff; }
+  .subtitle { color: #9095a0; font-size: 14px; margin-bottom: 32px; }
+  h2 { font-size: 18px; margin: 28px 0 12px; color: #4d8eff; }
+  .step {
+    background: #1a1c25;
+    border: 1px solid #2a2d38;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 12px;
+    counter-increment: step;
+    position: relative;
+    padding-left: 52px;
+  }
+  .step::before {
+    content: counter(step);
+    position: absolute;
+    left: 16px;
+    top: 16px;
+    width: 28px;
+    height: 28px;
+    background: #4d8eff;
+    color: #fff;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .step strong { color: #fff; }
+  code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    background: #252833;
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: #4d8eff;
+  }
+  .code-block {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    background: #252833;
+    border: 1px solid #2a2d38;
+    border-radius: 8px;
+    padding: 12px;
+    margin: 12px 0;
+    overflow-x: auto;
+    word-break: break-all;
+    color: #00b37e;
+    user-select: all;
+    -webkit-user-select: all;
+  }
+  .btn {
+    display: inline-block;
+    background: #4d8eff;
+    color: #fff;
+    padding: 12px 24px;
+    border-radius: 10px;
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 16px;
+    margin: 8px 0;
+    text-align: center;
+    width: 100%;
+  }
+  .btn-secondary {
+    background: #252833;
+    border: 1px solid #2a2d38;
+  }
+  .warn {
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-radius: 8px;
+    padding: 12px;
+    margin: 12px 0;
+    font-size: 13px;
+    color: #f59e0b;
+  }
+  .method {
+    background: #1a1c25;
+    border: 1px solid #2a2d38;
+    border-radius: 16px;
+    padding: 20px;
+    margin: 16px 0;
+  }
+  .method-tag {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 10px;
+    border-radius: 20px;
+    margin-bottom: 8px;
+  }
+  .tag-easy { background: rgba(0,179,126,0.15); color: #00b37e; }
+  .tag-advanced { background: rgba(77,142,255,0.15); color: #4d8eff; }
+  .divider { border: none; border-top: 1px solid #2a2d38; margin: 32px 0; }
+  .footer { text-align: center; color: #9095a0; font-size: 12px; margin-top: 40px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <h1>🎓 Bulletin<span>+</span></h1>
+  <p class="subtitle">Installation sur iPhone / iPad</p>
+
+  <!-- =============================== -->
+  <div class="method">
+    <span class="method-tag tag-easy">✅ Recommandé</span>
+    <h2 style="margin-top:0">Méthode 1 — GitHub Pages</h2>
+    <p style="font-size:14px;color:#9095a0;margin-bottom:16px;">
+      Le script est hébergé en ligne. Le bookmarklet le charge automatiquement.
+    </p>
+
+    <div class="warn">
+      ⚠️ <strong>Prérequis :</strong> tu dois d'abord publier le fichier <code>app.min.js</code> sur GitHub Pages. 
+      Voir les instructions en bas de cette page.
+    </div>
+
+    <h3 style="font-size:15px;margin:16px 0 8px;">Installation du bookmarklet</h3>
+    <ol style="counter-reset:step;list-style:none;padding:0;">
+      <div class="step">
+        Ouvre <strong>Safari</strong> sur ton iPhone et va sur n'importe quelle page
+      </div>
+      <div class="step">
+        Ajoute cette page aux <strong>favoris</strong> (icône partage → Ajouter aux favoris). Nomme-la <strong>Bulletin+</strong>
+      </div>
+      <div class="step">
+        Va dans tes <strong>favoris</strong>, trouve "Bulletin+", appuie dessus longuement → <strong>Modifier</strong>
+      </div>
+      <div class="step">
+        <strong>Remplace l'URL</strong> par le code ci-dessous (sélectionne tout, copie, colle) :
+      </div>
+    </ol>
+
+    <div class="code-block" id="bookmarklet-github">javascript:void(document.head.appendChild(Object.assign(document.createElement('script'),{src:'https://TONPSEUDO.github.io/bulletin-plus/app.min.js'})))</div>
+
+    <p style="font-size:13px;color:#9095a0;margin-top:8px;">
+      Remplace <code>TONPSEUDO</code> par ton pseudo GitHub.
+    </p>
+  </div>
+
+  <hr class="divider">
+
+  <!-- =============================== -->
+  <div class="method">
+    <span class="method-tag tag-advanced">🔧 Alternative</span>
+    <h2 style="margin-top:0">Méthode 2 — Sans hébergement</h2>
+    <p style="font-size:14px;color:#9095a0;margin-bottom:16px;">
+      Tu colles le script complet directement dans le bookmarklet. Plus long à installer mais ne dépend de rien.
+    </p>
+
+    <div class="step" style="counter-reset:step;">
+      Même procédure que la méthode 1 pour créer le favori
+    </div>
+    <div class="step">
+      Remplace l'URL par le contenu du fichier <code>bookmarklet-full.txt</code> fourni dans le zip
+    </div>
+
+    <div class="warn">
+      ⚠️ Le code fait ~32 000 caractères. Safari peut tronquer le collage. Si ça ne marche pas, utilise la méthode 1.
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <!-- =============================== -->
+  <h2>📱 Utilisation</h2>
+  <ol style="counter-reset:step;list-style:none;padding:0;">
+    <div class="step">
+      Ouvre Safari et va sur <strong>bulletin.iut-info.univ-lille.fr</strong>
+    </div>
+    <div class="step">
+      <strong>Connecte-toi</strong> normalement avec le CAS de Lille
+    </div>
+    <div class="step">
+      Une fois sur tes notes, tape dans la <strong>barre d'adresse</strong> et cherche <strong>"Bulletin+"</strong> dans tes favoris
+    </div>
+    <div class="step">
+      Appuie dessus — l'interface se transforme ! 🚀
+    </div>
+  </ol>
+
+  <hr class="divider">
+
+  <!-- =============================== -->
+  <h2>🚀 Publier sur GitHub Pages (gratuit)</h2>
+  <ol style="counter-reset:step;list-style:none;padding:0;">
+    <div class="step">
+      Crée un repo GitHub nommé <code>bulletin-plus</code>
+    </div>
+    <div class="step">
+      Upload le fichier <code>app.min.js</code> à la racine du repo
+    </div>
+    <div class="step">
+      Va dans <strong>Settings → Pages</strong> → Source: <strong>Deploy from branch</strong> → Branch: <strong>main</strong> → Save
+    </div>
+    <div class="step">
+      Attends 2 minutes, puis vérifie que <code>https://TONPSEUDO.github.io/bulletin-plus/app.min.js</code> fonctionne
+    </div>
+  </ol>
+
+  <p class="footer">
+    IUT Bulletin+ — Extension Chrome + Bookmarklet iOS<br>
+    100% côté client · Aucune donnée collectée
+  </p>
+
+</div>
+</body>
+</html>
