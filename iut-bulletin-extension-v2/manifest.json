@@ -6,7 +6,7 @@
   "permissions": [],
   "content_scripts": [
     {
-      "matches": ["*://bulletin.iut-info.univ-lille.fr/*"],
+      "matches": ["*://bulletin.iut-info.univ-lille.fr*"],
       "js": ["inject.js"],
       "run_at": "document_start"
     }
@@ -14,7 +14,7 @@
   "web_accessible_resources": [
     {
       "resources": ["app.js"],
-      "matches": ["*://bulletin.iut-info.univ-lille.fr/*"]
+      "matches": ["*://bulletin.iut-info.univ-lille.fr*"]
     }
   ],
   "icons": {
